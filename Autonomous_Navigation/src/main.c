@@ -3,100 +3,97 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-// Add function prototypes here, as needed.
-void GPIO_init();
-void timer_init();
-void timer_ISR();
-void CCR_ISR();
-void motor_control();
-uint16_t readCompass(),readRanger(),heading,distance;
+// Function Prototypes
+void GPIO_init(void);
+void timer_init(void);
+void timer_ISR(void);
+void CCR_ISR(void);
+void motor_control(void);
+uint16_t readCompass(void);
+uint16_t readRanger(void);
+
+// Global Variables
+uint16_t heading = 0;
+uint16_t distance = 0;
+uint16_t distance1 = 0;
+uint16_t compass = 0;
+int16_t target_compass = 0;
 uint8_t data[4];
 
-// Add global variables here, as needed.
-uint8_t timer_isr_var;
-uint16_t distance1;
-uint16_t compass;
-int16_t target_compass=0;
-uint32_t timer_edges_left;
-uint32_t timer_counts_left = 0;
-uint32_t measurement_counts_left = 0;
-uint32_t current_PWM_left;
-uint32_t timer_edges_right;
-uint32_t timer_counts_right = 0;
-uint32_t measurement_counts_right = 0;
-uint32_t current_PWM_right;
-uint16_t LPWM = 0;
-uint16_t RPWM = 0;
+// Timer Configs
 Timer_A_UpModeConfig timer1_config;
-Timer_A_UpModeConfig timer2_config;
-Timer_A_CompareModeConfig timer_compare_config_left,timer_compare_config_right;
 Timer_A_ContinuousModeConfig timer3_config;
-Timer_A_CaptureModeConfig timer_captureL;
-Timer_A_CaptureModeConfig timer_captureR;
-uint32_t enc_totalR;
-int32_t enc_counts_trackR,enc_countsR;
-uint8_t enc_flagR;
-uint32_t enc_totalL;
-int32_t enc_counts_trackL,enc_countsL;
-uint8_t enc_flagL;
-uint16_t timeravg_R = 0;
-uint16_t timeravg_L = 0;
+Timer_A_CaptureModeConfig timer_captureL, timer_captureR;
+Timer_A_CompareModeConfig timer_compare_config_left, timer_compare_config_right;
 
-// Main Function
+// Encoder Variables
+uint32_t enc_totalR, enc_totalL;
+int32_t enc_counts_trackR, enc_counts_trackL;
+int32_t enc_countsR, enc_countsL;
+uint8_t enc_flagR, enc_flagL;
+uint32_t timer_counts_right = 0, measurement_counts_right = 0;
+uint32_t timer_counts_left = 0, measurement_counts_left = 0;
+uint16_t timeravg_R = 0, timeravg_L = 0;
+
+
 int main(void){
     SysInit();
     GPIO_init();
     I2C_init();
     timer_init();
-    //data[0]=0x51;
-    //I2C_writeData(EUSCI_B0_BASE,0x70,0,data,1);
-    // Place initialization code (or run-once) code here
-    //LPWM =.3*timer1_config.timerPeriod;
-    //RPWM =.3*timer1_config.timerPeriod;
-    //Timer_A_setCompareValue(TIMER_A0_BASE,TIMER_A_CAPTURECOMPARE_REGISTER_3,LPWM);
-    //Timer_A_setCompareValue(TIMER_A0_BASE,TIMER_A_CAPTURECOMPARE_REGISTER_4,RPWM);
+
     while(1){
-        GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7); //motors off
-        GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN4 | GPIO_PIN5); //direction forwards
-        GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);//motors on
+        // State 1: Move Forward until Obstacle
+        GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7); // Motors OFF
+        GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN4 | GPIO_PIN5); // Direction FWD
+        GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);// Motors ON
+        
         distance1 = readRanger();
-        printf("distance: %u\r\n",distance1);
-        __delay_cycles(2400000); // Wait 1/10 of a second
-        while(distance1>25){
+        printf("Distance: %u\r\n", distance1);
+        __delay_cycles(2400000); // 100ms delay
+
+        // Blocking wait for obstacle (Simple Sequential Logic)
+        while(distance1 > 25){
             distance1 = readRanger();
-            printf("while distance: %u\r\n",distance1);
-            __delay_cycles(2400000); // Wait 1/10 of a second
+            printf("Path Clear: %u\r\n", distance1);
+            __delay_cycles(2400000); 
         }
-        GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7); //motors off
+
+        // State 2: Stop and Scan
+        GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7); // Stop
         compass = readCompass();
-        printf("compass: %u\r\n",compass);
+        printf("Heading: %u\r\n", compass);
+        
+        // Calculate Turn Target (-90 degrees)
         target_compass = compass - 900;
         if(target_compass < 0){
             target_compass += 3600;
         }
-        while(abs(target_compass-compass)>10){
-            //turn - pins may need to be swapped
+
+        // State 3: Execute Turn
+        while(abs(target_compass - compass) > 10){
             GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN5);
             GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN4);
-            GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7); //motor on
-            __delay_cycles(2400000); // Wait 1/10 of a second
+            GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7); 
+            __delay_cycles(2400000); 
             GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);
             compass = readCompass();
-            printf("compass: %u\r\n",compass);
         }
-        __delay_cycles(2400000); // Wait 1/10 of a second
+
+        // State 4: Re-Check and Adjust
+        __delay_cycles(2400000); 
         distance1 = readRanger();
+        
         if(distance1 < 25){
+            // Obstacle still there? Turn 180.
             target_compass = compass + 1800;
-            if(target_compass > 3600){
-                target_compass -= 3600;
-            }
-            while(abs(target_compass-compass)>10){
-                //turn
+            if(target_compass > 3600) target_compass -= 3600;
+            
+            while(abs(target_compass - compass) > 10){
                 GPIO_setOutputHighOnPin(GPIO_PORT_P5, GPIO_PIN5);
                 GPIO_setOutputLowOnPin(GPIO_PORT_P5, GPIO_PIN4);
                 GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);
-                __delay_cycles(240000);
+                __delay_cycles(240000); // Faster checks during fine adjustment
                 GPIO_setOutputLowOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);
                 compass = readCompass();
             }
@@ -104,7 +101,8 @@ int main(void){
     }
 }
 
-// Add function declarations here as needed
+
+// Function declarations:
 void GPIO_init(){
     GPIO_setAsOutputPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);
     GPIO_setAsOutputPin(GPIO_PORT_P5, GPIO_PIN4 | GPIO_PIN5);

@@ -20,15 +20,16 @@ Timer_A_CaptureModeConfig TA3_ccr1;
 uint32_t enc_total_L, enc_total_R;
 
 // Speed measurement variables
-int32_t Tach_L_count, Tach_L, Tach_L_sum, Tach_L_sum_count, Tach_L_avg; // Left wheel
-int32_t Tach_R_count, Tach_R, Tach_R_sum, Tach_R_sum_count, Tach_R_avg; // Right wheel
+int32_t Tach_L_count, Tach_L, Tach_L_sum, Tach_L_sum_count, Tach_L_avg; 
+int32_t Tach_R_count, Tach_R, Tach_R_sum, Tach_R_sum_count, Tach_R_avg; 
 
-// Control Variables
-uint8_t run_control, turn, diff_speed, desired_wheel_l, desired_wheel_r;
-uint8_t current_speed_error_l, current_speed_error_r;
-uint8_t error_sum_l, error_sum_r;
-uint8_t ki = 1; // Integral constant (Gain)
-uint8_t corrected_l, corrected_r = 0; 
+// Control Variables (Using float to prevent integer overflow/underflow bugs)
+uint8_t run_control = 0;
+uint8_t turn = 0;
+float diff_speed, desired_wheel_l, desired_wheel_r;
+float measured_speed_l, measured_speed_r;
+float kp = 1.0; // Proportional Gain (Kp) - Tuned for stability
+float corrected_l, corrected_r; 
 
 int main(void)
 {
@@ -37,15 +38,15 @@ int main(void)
     ADCInit();
     TimerInit();
 
-    __delay_cycles(24e6);
+    __delay_cycles(24000000); // Wait 1s for system to settle
     GPIO_setOutputHighOnPin(GPIO_PORT_P3, GPIO_PIN6 | GPIO_PIN7);
 
     while(1){
         if(run_control){    // Run control loop @ 10Hz (100ms)
             run_control = 0;
             
-            // --- 1. Odometry & Navigation Logic ---
-            uint16_t distance = (2 * 3.1416 * (.035 / 360)) * enc_total_L * 1000;
+            // --- 1. Odometry Logic ---
+            float distance = (2.0 * 3.14159 * (.035 / 360.0)) * enc_total_L * 1000.0;
             
             if(distance >= 20 && distance < 95){
                 turn = 0;
@@ -55,52 +56,56 @@ int main(void)
 
             // --- 2. Sensor Fusion (ADC Inputs) ---
             uint16_t speed_pot = ADC14_getResult(ADC_MEM0);
-            uint16_t desired_speed = (40 * speed_pot / 65536) + 10; 
+            float desired_speed = (40.0 * speed_pot / 16384.0) + 10.0; 
 
             uint16_t track_pot = ADC14_getResult(ADC_MEM1);
-            uint16_t actual_L = (75 * track_pot / 65536) + 20;
-            uint16_t actual_r = (102 * track_pot / 65536) + 15;
+            float actual_r = (102.0 * track_pot / 16384.0) + 15.0;
 
             // --- 3. Differential Drive Mixing ---
             if(turn == 1){
-                diff_speed = desired_speed * (.5 * .0145 / actual_r);
+                diff_speed = desired_speed * (0.5 * 0.0145 / actual_r);
             } else {
                 diff_speed = 0;
             }
 
-            // Calculate target wheel speeds
             desired_wheel_l = desired_speed - diff_speed;
             desired_wheel_r = desired_speed + diff_speed;
 
-            // --- 4. Motor Actuation & Safety ---
-            // Deadband Check: Stop motors if target is too low
-            if(desired_wheel_r < 10 || desired_wheel_l < 10){
-                if(desired_wheel_r < 10){
-                    desired_wheel_r = 0;
-                    TA0_ccr3.compareValue = 0;
-                }
-                if(desired_wheel_l < 10){
-                    desired_wheel_l = 0;
-                    TA0_ccr4.compareValue = 0;
-                }
-            }
+            // --- 4. Motor Safety (Deadband) ---
+            if(desired_wheel_r < 10) { desired_wheel_r = 0; TA0_ccr3.compareValue = 0; }
+            if(desired_wheel_l < 10) { desired_wheel_l = 0; TA0_ccr4.compareValue = 0; }
             
-            // --- 5. PI Control Loop ---
+            // --- 5. Closed-Loop Control (Feedforward + Proportional) ---
             if(desired_wheel_l >= 10){
-                current_speed_error_l = 1500000 / Tach_L_avg; // Measured Speed
-                error_sum_l += current_speed_error_l;         // Integrate Error
-                // PI Control Law: Output = Setpoint + Ki * (Error)
-                corrected_l = desired_wheel_l + ki * (desired_wheel_l - current_speed_error_l);
+                // Safety: Prevent divide by zero if wheels are stopped
+                if(Tach_L_avg > 0) measured_speed_l = 1500000.0 / Tach_L_avg;
+                else measured_speed_l = 0;
+
+                // Control Law: Output = Desired (Feedforward) + Kp * Error
+                corrected_l = desired_wheel_l + kp * (desired_wheel_l - measured_speed_l);
+                
+                // Clamp Output to PWM limits
+                if(corrected_l > 2300) corrected_l = 2300;
+                if(corrected_l < 0) corrected_l = 0;
+                
+                Timer_A_setCompareValue(TIMER_A0_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_4, (uint16_t)corrected_l);
             }
+
             if(desired_wheel_r >= 10){
-                current_speed_error_r = 1500000 / Tach_R_avg; // Measured Speed
-                error_sum_r += current_speed_error_r;         // Integrate Error
-                // PI Control Law
-                corrected_r = desired_wheel_r + ki * (desired_wheel_r - current_speed_error_r);
+                if(Tach_R_avg > 0) measured_speed_r = 1500000.0 / Tach_R_avg;
+                else measured_speed_r = 0;
+
+                corrected_r = desired_wheel_r + kp * (desired_wheel_r - measured_speed_r);
+
+                if(corrected_r > 2300) corrected_r = 2300;
+                if(corrected_r < 0) corrected_r = 0;
+
+                Timer_A_setCompareValue(TIMER_A0_BASE, TIMER_A_CAPTURECOMPARE_REGISTER_3, (uint16_t)corrected_r);
             }
         }
     }
 }
+
 
 void ADCInit(){
     ADC14_enableModule();
