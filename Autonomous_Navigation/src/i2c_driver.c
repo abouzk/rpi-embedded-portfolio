@@ -1,5 +1,12 @@
 #include "../include/i2c_driver.h"
 
+// [PORTFOLIO NOTE]
+// Limitation: This driver currently uses blocking waits with a simple cycle delay.
+// In a production RTOS environment, this would be replaced by a DMA-based
+// non-blocking transaction or a state machine to prevent CPU stalling.
+// The global interrupt disable is used here to ensure atomic transactions on the 
+// MSP432 during critical register writes.
+
 static eUSCI_I2C_MasterConfig i2c_config;
 
 void I2C_init(){
@@ -22,7 +29,6 @@ void I2C_readData(uint32_t moduleInstance,uint8_t PeriphAddress,uint8_t StartReg
         return;
     }
 
-    Interrupt_disableMaster(); //  Disable all interrupts to prevent timing issues
     // Then do read transaction...
     I2C_setSlaveAddress(moduleInstance,PeriphAddress); // Set the peripheral address
     I2C_setMode(moduleInstance,EUSCI_B_I2C_RECEIVE_MODE); // Indicate a read operation
@@ -42,7 +48,6 @@ void I2C_readData(uint32_t moduleInstance,uint8_t PeriphAddress,uint8_t StartReg
     // communication will halt after the byte is received.
     data[ctr] = I2C_masterReceiveMultiByteFinish(moduleInstance); // send STOP, read and store received byte
 
-    Interrupt_enableMaster(); // Re-enable interrupts
 
     __delay_cycles(200); // A short delay to avoid starting another I2C transaction too quickly
 }

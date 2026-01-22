@@ -31,6 +31,11 @@ float measured_speed_l, measured_speed_r;
 float kp = 1.0; // Proportional Gain (Kp) - Tuned for stability
 float corrected_l, corrected_r; 
 
+// Control Architecture: Feedforward + Proportional Controller
+// Note: MSP432 Cortex-M4F FPU enabled allows for floating point math 
+// without significant cycle penalty in the 100ms control loop. Not viable on
+// smaller MCUs without hardware FPU.
+
 int main(void)
 {
     SysInit();
